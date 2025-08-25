@@ -757,6 +757,24 @@ BAIT_RARITY_MAP = {
     "legend": ["Exotic", "???"],
 }
 
+# Skill definitions
+SKILLS = {
+    "lucky_catch": {
+        "name": "Lucky Catch",
+        "desc": "+1% chance to catch Rare+ fish",
+        "rare_bonus": 0.01,
+    },
+    "streak_master": {
+        "name": "Streak Master",
+        "desc": "First miss won't reset streak (Normal Fishing)",
+    },
+    "night_fisher": {
+        "name": "Night Fisher",
+        "desc": "+20% XP at Night",
+        "xp_multiplier_night": 1.2,
+    },
+}
+
 @dataclass
 class Quest:
     """Represents a quest tied to a specific zone."""
@@ -967,6 +985,8 @@ class Game:
         self.level = 0
         self.xp = 0
         self.streak = 0
+        self.skills_unlocked: List[str] = []
+        self.streak_protect_used = False
         self.discovery: Dict[str, Dict] = {}
         self.current_zone = "Lake"
         self.current_fish_list = FISH_LAKE
@@ -1016,6 +1036,7 @@ class Game:
               'event': self.event,
               'level': self.level,
               'xp': self.xp,
+            'skillsUnlocked': self.skills_unlocked,
             'discovery': self.discovery,
             'quests': self.quest_manager.to_save_dict(),
             'streak': self.streak,
@@ -1063,6 +1084,7 @@ class Game:
             self.event = data.get('event', 'Nothing')
             self.level = data.get('level', 0)
             self.xp = data.get('xp', 0)
+            self.skills_unlocked = data.get('skillsUnlocked', [])
             self.streak = data.get('streak', 0)
             self.fast_fishing_price = data.get('fastFishingPrice', 15)
             self.daily_event = data.get('dailyEvent', None)
@@ -1150,9 +1172,28 @@ class Game:
                 return
             else:
                 print(f"Congratulations! You leveled up to level {self.level}!")
+                self.level_up_menu()
             xp_needed = self.calculate_xp_for_level(self.level)
         if self.level >= 100:
             self.xp = 0
+
+    def level_up_menu(self):
+        available = [k for k in SKILLS.keys() if k not in self.skills_unlocked]
+        if not available:
+            return
+        print("\n🎉 Level Up! Chọn kỹ năng:")
+        for i, key in enumerate(available, 1):
+            s = SKILLS[key]
+            print(f"{i}. {s['name']} - {s['desc']}")
+        choice = input("Chọn (số): ").strip()
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(available):
+                chosen = available[idx]
+                self.skills_unlocked.append(chosen)
+                print(f"✅ Đã mở: {SKILLS[chosen]['name']}")
+        except Exception:
+            print("Bỏ qua nâng cấp (chọn không hợp lệ).")
 
     # -------------- Rarity helpers --------------
     def get_rarity_color(self, rarity: str) -> str:
@@ -1515,6 +1556,10 @@ class Game:
     def get_fish_by_weighted_random(self, fish_list: List[Dict], fast_mode: bool = False) -> Dict | None:
         # Chance to encounter zone boss
         boss_chance = BASE_BOSS_CHANCE
+        rare_bonus = 0.0
+        if "lucky_catch" in self.skills_unlocked:
+            rare_bonus += SKILLS["lucky_catch"]["rare_bonus"]
+        boss_chance += rare_bonus
         if not fast_mode:
             boss_chance += self.streak * BOSS_BONUS_PER_STREAK
             if self.daily_event == "Full Moon Night":
@@ -1538,6 +1583,8 @@ class Game:
                 xp_gain = boss_xp
                 if self.daily_event == "Double XP Day":
                     xp_gain *= 2
+                if "night_fisher" in self.skills_unlocked and self.get_time_of_day() == "Night":
+                    xp_gain = int(xp_gain * SKILLS["night_fisher"]["xp_multiplier_night"])
                 caught = {
                     "name": boss["name"],
                     "rarity": "???",
@@ -1561,6 +1608,7 @@ class Game:
                 self.quest_manager.update_quest_progress(self.current_zone, boss["name"], "???")
                 self.record_catch(caught, xp_gain, new_species=new_species, is_boss=True)
                 self.update_zone_completion(self.current_zone)
+                self.streak_protect_used = False
                 self.save_game()
                 input("Press Enter to continue...")
             else:
@@ -1583,6 +1631,8 @@ class Game:
                     chance += SEASONAL_BOOST_TIMEWINDOW
                 if self.event == 'Full Moon':
                     chance += SEASONAL_BOOST_EVENT
+                if "lucky_catch" in self.skills_unlocked:
+                    chance += SKILLS["lucky_catch"]["rare_bonus"]
                 chance = min(chance, SEASONAL_CHANCE_CAP)
                 if random.random() < chance:
                     caught = random.choice(pool).copy()
@@ -1633,7 +1683,7 @@ class Game:
             bonus = min(self.streak * 5, 40)
         else:
             bonus = min(self.streak * 2, 20)
-        chance = base_chance + bonus
+        chance = base_chance + bonus + rare_bonus * 100
         chance = min(chance, 100)
         if random.randint(1, 100) <= chance:
             pool = rare_weighted
@@ -1985,8 +2035,18 @@ class Game:
                         self.obtain_fish(full_moon_event=True)
                     else:
                         if self.streak > 0:
-                            print("The fish run and you lost the streak")
-                        self.streak = 0
+                            if (
+                                "streak_master" in self.skills_unlocked
+                                and not self.streak_protect_used
+                            ):
+                                self.streak_protect_used = True
+                                print("🛡 Streak Master: bạn không bị reset streak lần này!")
+                            else:
+                                print("The fish run and you lost the streak")
+                                self.streak = 0
+                                self.streak_protect_used = False
+                        else:
+                            self.streak_protect_used = False
                         input("Press Enter to continue...")
                     break
                 fish_list = list(self.current_fish_list)
@@ -2015,8 +2075,18 @@ class Game:
                             self.streak -= 1
                     else:
                         if self.streak > 0:
-                            print("The fish run and you lost the streak")
-                        self.streak = 0
+                            if (
+                                "streak_master" in self.skills_unlocked
+                                and not self.streak_protect_used
+                            ):
+                                self.streak_protect_used = True
+                                print("🛡 Streak Master: bạn không bị reset streak lần này!")
+                            else:
+                                print("The fish run and you lost the streak")
+                                self.streak = 0
+                                self.streak_protect_used = False
+                        else:
+                            self.streak_protect_used = False
                     input("Press Enter to continue...")
                 break
             else:
@@ -2075,6 +2145,8 @@ class Game:
             xp_gain = self.get_xp_by_rarity(fish['rarity'])
             if self.daily_event == "Double XP Day":
                 xp_gain *= 2
+            if "night_fisher" in self.skills_unlocked and self.get_time_of_day() == "Night":
+                xp_gain = int(xp_gain * SKILLS["night_fisher"]["xp_multiplier_night"])
             self.xp += xp_gain
             total_xp += xp_gain
             self.check_level_up()
@@ -2176,8 +2248,18 @@ class Game:
                 fish = self.get_fish_by_weighted_random(fish_list)
                 if fish is None:
                     if self.streak > 0:
-                        print("The fish run and you lost the streak")
-                    self.streak = 0
+                        if (
+                            "streak_master" in self.skills_unlocked
+                            and not self.streak_protect_used
+                        ):
+                            self.streak_protect_used = True
+                            print("🛡 Streak Master: bạn không bị reset streak lần này!")
+                        else:
+                            print("The fish run and you lost the streak")
+                            self.streak = 0
+                            self.streak_protect_used = False
+                    else:
+                        self.streak_protect_used = False
                     return
             fish = fish.copy()
             weight = self.generate_weight(fish['name'], fish['rarity'])
@@ -2203,6 +2285,8 @@ class Game:
         xp_gain = self.get_xp_by_rarity(fish['rarity'])
         if self.daily_event == "Double XP Day":
             xp_gain *= 2
+        if "night_fisher" in self.skills_unlocked and self.get_time_of_day() == "Night":
+            xp_gain = int(xp_gain * SKILLS["night_fisher"]["xp_multiplier_night"])
         self.xp += xp_gain
         self.check_level_up()
         if self.daily_event == "Treasure Hunt" and random.random() < 0.10:
@@ -2220,6 +2304,7 @@ class Game:
             self.update_seasonal_log(self.current_fish['name'], weight)
         self.update_zone_completion(self.current_zone)
         self.streak += 1
+        self.streak_protect_used = False
         print(f"Current streak: {self.streak}")
         self.check_achievements()
         if fish['name'] == 'Ancient Key' and not self.has_ancient_key:
@@ -2617,7 +2702,10 @@ class Game:
         count = random.randint(3, 7)
         for _ in range(count):
             if bait == 'legend':
-                if random.random() < 0.4:
+                boss_chance = 0.4
+                if "lucky_catch" in self.skills_unlocked:
+                    boss_chance += SKILLS["lucky_catch"]["rare_bonus"]
+                if random.random() < boss_chance:
                     boss_entry = next((f for f in fish_list if f['rarity'] == '???'), None)
                     if boss_entry:
                         weight = random.randint(1000, 10000)
@@ -2636,6 +2724,8 @@ class Game:
                         xp_gain = boss_entry.get('xp', 0)
                         if self.daily_event == 'Double XP Day':
                             xp_gain *= 2
+                        if "night_fisher" in self.skills_unlocked and self.get_time_of_day() == "Night":
+                            xp_gain = int(xp_gain * SKILLS["night_fisher"]["xp_multiplier_night"])
                         self.xp += xp_gain
                         total_xp += xp_gain
                         self.quest_manager.update_quest_progress(zone, entry['name'], '???')
@@ -2679,6 +2769,8 @@ class Game:
             xp_gain = self.get_xp_by_rarity(fish['rarity'])
             if self.daily_event == 'Double XP Day':
                 xp_gain *= 2
+            if "night_fisher" in self.skills_unlocked and self.get_time_of_day() == "Night":
+                xp_gain = int(xp_gain * SKILLS["night_fisher"]["xp_multiplier_night"])
             self.xp += xp_gain
             total_xp += xp_gain
             self.quest_manager.update_quest_progress(zone, fish['name'], fish['rarity'])
